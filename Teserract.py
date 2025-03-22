@@ -72,7 +72,7 @@ class DataPreprocessor:
 
 # Gerçek Zamanlı Tahmin Thread'i
 class PredictionThread(QThread):
-    update_signal = pyqtSignal(float, float, str)
+    update_signal = pyqtSignal(float, float, str, int, int)  # current, prediction, timestamp, total_predictions, correct_predictions
     error_signal = pyqtSignal(str)
 
     def __init__(self, db_manager):
@@ -83,6 +83,8 @@ class PredictionThread(QThread):
         self.seq_length = 60
         self.running = True
         self.writer = SummaryWriter('runs/time_series_experiment')
+        self.total_predictions = 0
+        self.correct_predictions = 0
 
     def run(self):
         while self.running:
@@ -132,7 +134,26 @@ class PredictionThread(QThread):
 
                     # Gerçek zamanlı güncelleme
                     current_value = data['value'].iloc[-1]
-                    self.update_signal.emit(current_value, prediction[0], time.strftime('%H:%M:%S'))
+                    predicted_value = prediction[0]
+
+                    # Tahminin doğruluğunu kontrol et
+                    self.total_predictions += 1
+                    if abs(predicted_value - current_value) <= 0.1 * current_value:  # %10 hata payı
+                        self.correct_predictions += 1
+
+                    # PyQt'ye güncelleme gönder
+                    self.update_signal.emit(
+                        current_value,
+                        predicted_value,
+                        time.strftime('%H:%M:%S'),
+                        self.total_predictions,
+                        self.correct_predictions
+                    )
+
+                    # Yeni veriyi eğitim verisine ekle
+                    new_data = np.array([[current_value, 0]])  # missing=0 varsayalım
+                    scaled_new_data = self.scaler.transform(new_data)
+                    scaled_data = np.vstack((scaled_data, scaled_new_data))
 
                 time.sleep(1)  # 1 saniyede bir güncelleme
 
@@ -157,10 +178,12 @@ class MainApp(QMainWindow):
         self.value_label = QLabel('Anlık Değer: -')
         self.pred_label = QLabel('Tahmin: -')
         self.time_label = QLabel('Son Güncelleme: -')
+        self.stats_label = QLabel('Tahminler: 0/0 (Doğru: 0)')
 
         layout.addWidget(self.value_label)
         layout.addWidget(self.pred_label)
         layout.addWidget(self.time_label)
+        layout.addWidget(self.stats_label)
 
         container = QWidget()
         container.setLayout(layout)
@@ -172,10 +195,11 @@ class MainApp(QMainWindow):
         self.thread.error_signal.connect(self.show_error)
         self.thread.start()
 
-    def update_ui(self, current, prediction, timestamp):
+    def update_ui(self, current, prediction, timestamp, total_predictions, correct_predictions):
         self.value_label.setText(f"Anlık Değer: {current:.2f}")
         self.pred_label.setText(f"Tahmin: {prediction:.2f}")
         self.time_label.setText(f"Son Güncelleme: {timestamp}")
+        self.stats_label.setText(f"Tahminler: {total_predictions} (Doğru: {correct_predictions})")
 
     def show_error(self, message):
         self.time_label.setText(message)
