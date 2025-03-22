@@ -72,7 +72,7 @@ class DataPreprocessor:
 
 # Gerçek Zamanlı Tahmin Thread'i
 class PredictionThread(QThread):
-    update_signal = pyqtSignal(float, float, str, int, int)  # current, prediction, timestamp, total_predictions, correct_predictions
+    update_signal = pyqtSignal(float, float, str, int, int, int, int)  # current, prediction, timestamp, total_predictions, correct_predictions, prediction_count, row_num
     error_signal = pyqtSignal(str)
 
     def __init__(self, db_manager):
@@ -85,12 +85,19 @@ class PredictionThread(QThread):
         self.writer = SummaryWriter('runs/time_series_experiment')
         self.total_predictions = 0
         self.correct_predictions = 0
+        self.prediction_count = 0
+        self.data_size = 5000  # Eğitim verisini 5000'e çıkar
 
     def run(self):
         while self.running:
             try:
                 # Verileri çek ve işle
-                data = self.db.fetch_data("SELECT TOP 2000 timestamp, value FROM RedNumbers ORDER BY timestamp")
+                query = f"""
+                SELECT ROW_NUMBER() OVER (ORDER BY timestamp DESC) AS row_num, timestamp, value 
+                FROM RedNumbers 
+                ORDER BY timestamp DESC
+                """
+                data = self.db.fetch_data(query)
                 if data is None:
                     time.sleep(5)
                     continue
@@ -121,7 +128,7 @@ class PredictionThread(QThread):
                     loss.backward()
                     optimizer.step()
                     self.writer.add_scalar('Loss/train', loss.item(), epoch)
-                    print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+                    print(f"Epoch {epoch + 1}, Loss: {loss.item():.4f}")
 
                 # Tahmin yap
                 with torch.no_grad():
@@ -133,11 +140,13 @@ class PredictionThread(QThread):
                         np.concatenate((prediction, [[0]]), axis=1))[:, 0]
 
                     # Gerçek zamanlı güncelleme
-                    current_value = data['value'].iloc[-1]
+                    current_value = data['value'].iloc[0]  # En yeni değeri al
                     predicted_value = prediction[0]
+                    row_num = data['row_num'].iloc[0]  # Sıra numarasını al
 
                     # Tahminin doğruluğunu kontrol et
                     self.total_predictions += 1
+                    self.prediction_count += 1  # Tahmin sayısını artır
                     if abs(predicted_value - current_value) <= 0.1 * current_value:  # %10 hata payı
                         self.correct_predictions += 1
 
@@ -147,7 +156,9 @@ class PredictionThread(QThread):
                         predicted_value,
                         time.strftime('%H:%M:%S'),
                         self.total_predictions,
-                        self.correct_predictions
+                        self.correct_predictions,
+                        self.prediction_count,
+                        row_num  # Sıra numarasını ekle
                     )
 
                     # Yeni veriyi eğitim verisine ekle
@@ -179,11 +190,15 @@ class MainApp(QMainWindow):
         self.pred_label = QLabel('Tahmin: -')
         self.time_label = QLabel('Son Güncelleme: -')
         self.stats_label = QLabel('Tahminler: 0/0 (Doğru: 0)')
+        self.prediction_count_label = QLabel('Kaçıncı Tahmin: 0')
+        self.row_num_label = QLabel('Tahmin Edilen Sıra: -')  # Yeni QLabel
 
         layout.addWidget(self.value_label)
         layout.addWidget(self.pred_label)
         layout.addWidget(self.time_label)
         layout.addWidget(self.stats_label)
+        layout.addWidget(self.prediction_count_label)
+        layout.addWidget(self.row_num_label)  # Yeni QLabel'ı ekle
 
         container = QWidget()
         container.setLayout(layout)
@@ -195,11 +210,14 @@ class MainApp(QMainWindow):
         self.thread.error_signal.connect(self.show_error)
         self.thread.start()
 
-    def update_ui(self, current, prediction, timestamp, total_predictions, correct_predictions):
+    def update_ui(self, current, prediction, timestamp, total_predictions, correct_predictions, prediction_count, row_num):
         self.value_label.setText(f"Anlık Değer: {current:.2f}")
         self.pred_label.setText(f"Tahmin: {prediction:.2f}")
         self.time_label.setText(f"Son Güncelleme: {timestamp}")
         self.stats_label.setText(f"Tahminler: {total_predictions} (Doğru: {correct_predictions})")
+        self.prediction_count_label.setText(f"Kaçıncı Tahmin: {prediction_count}")
+        self.row_num_label.setText(f"Tahmin Edilen Sıra: {row_num}")  # Sıra numarasını göster
+        QApplication.processEvents()  # Arayüzü güncelle
 
     def show_error(self, message):
         self.time_label.setText(message)
