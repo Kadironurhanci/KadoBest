@@ -9,12 +9,14 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import create_engine
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import GradScaler, autocast  # Mixed precision için
+from torch.utils.checkpoint import checkpoint  # Checkpointing için
 
 # SQLAlchemy ile veritabanı bağlantısı
-SERVER = 'DESKTOP-EFBJ0MU'
-DATABASE = 'kadoDB'
-USERNAME = 'sa'
-PASSWORD = 'Kadir81onur'
+SERVER = ''
+DATABASE = ''
+USERNAME = ''
+PASSWORD = ''
 
 connection_string = f"mssql+pyodbc://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}?driver=ODBC+Driver+17+for+SQL+Server"
 engine = create_engine(connection_string)
@@ -35,19 +37,19 @@ class DatabaseManager:
 
 # LSTM Modeli
 class TimeSeriesLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=128, output_size=1, num_layers=2):
+    def __init__(self, input_size=1, hidden_size=64, output_size=1, num_layers=1):  # Bellek kullanımını azaltmak için hidden_size ve num_layers küçültüldü
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, output_size)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.to(self.device)  # Modeli direkt olarak cihaza taşı
+        self.to(self.device)
 
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(self.device)
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(self.device)
-        out, _ = self.lstm(x, (h0, c0))
+        out, _ = checkpoint(self.lstm, x, (h0, c0))  # Checkpointing ile bellek kullanımını azalt
         out = self.fc(out[:, -1, :])
         return out
 
@@ -87,6 +89,9 @@ class PredictionThread(QThread):
         self.correct_predictions = 0
         self.prediction_count = 0
         self.data_size = 5000  # Eğitim verisini 5000'e çıkar
+        self.batch_size = 32  # Batch boyutunu küçült
+        self.accumulation_steps = 4  # Gradient accumulation adım sayısı
+        self.scaler_mixed_precision = GradScaler()  # Mixed precision için
 
     def run(self):
         while self.running:
@@ -111,24 +116,38 @@ class PredictionThread(QThread):
                 # Modeli oluştur ve GPU'ya taşı
                 if self.model is None:
                     self.model = TimeSeriesLSTM(input_size=2)  # input_size=2 (value + missing)
-                    self.model.to(self.model.device)  # Modeli GPU'ya taşı
+                    self.model.to(self.model.device)
                     criterion = nn.MSELoss()
                     optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
 
                 X, y = preprocessor.create_sequences(scaled_data, self.seq_length)
                 X_tensor = torch.FloatTensor(X).to(self.model.device)
-                y_tensor = torch.FloatTensor(y[:, 0]).unsqueeze(1).to(self.model.device)  # Sadece 'value' sütununu al
+                y_tensor = torch.FloatTensor(y[:, 0]).unsqueeze(1).to(self.model.device)
 
                 # Eğitim döngüsü
                 self.model.train()
-                for epoch in range(10):
+                optimizer.zero_grad()
+                for i in range(0, len(X_tensor), self.batch_size * self.accumulation_steps):
+                    for j in range(self.accumulation_steps):
+                        start_idx = i + j * self.batch_size
+                        end_idx = start_idx + self.batch_size
+                        if end_idx > len(X_tensor):
+                            break
+
+                        with autocast():  # Mixed precision
+                            outputs = self.model(X_tensor[start_idx:end_idx])
+                            loss = criterion(outputs, y_tensor[start_idx:end_idx])
+                            loss = loss / self.accumulation_steps  # Loss'u normalize et
+
+                        self.scaler_mixed_precision.scale(loss).backward()  # Mixed precision ile backward
+
+                    self.scaler_mixed_precision.step(optimizer)  # Mixed precision ile optimizer step
+                    self.scaler_mixed_precision.update()
                     optimizer.zero_grad()
-                    outputs = self.model(X_tensor)
-                    loss = criterion(outputs, y_tensor)
-                    loss.backward()
-                    optimizer.step()
-                    self.writer.add_scalar('Loss/train', loss.item(), epoch)
-                    print(f"Epoch {epoch + 1}, Loss: {loss.item():.4f}")
+
+                    # Belleği temizle
+                    del outputs, loss
+                    torch.cuda.empty_cache()
 
                 # Tahmin yap
                 with torch.no_grad():
@@ -140,13 +159,13 @@ class PredictionThread(QThread):
                         np.concatenate((prediction, [[0]]), axis=1))[:, 0]
 
                     # Gerçek zamanlı güncelleme
-                    current_value = data['value'].iloc[0]  # En yeni değeri al
+                    current_value = data['value'].iloc[0]
                     predicted_value = prediction[0]
-                    row_num = data['row_num'].iloc[0]  # Sıra numarasını al
+                    row_num = data['row_num'].iloc[0]
 
                     # Tahminin doğruluğunu kontrol et
                     self.total_predictions += 1
-                    self.prediction_count += 1  # Tahmin sayısını artır
+                    self.prediction_count += 1
                     if abs(predicted_value - current_value) <= 0.1 * current_value:  # %10 hata payı
                         self.correct_predictions += 1
 
@@ -158,7 +177,7 @@ class PredictionThread(QThread):
                         self.total_predictions,
                         self.correct_predictions,
                         self.prediction_count,
-                        row_num  # Sıra numarasını ekle
+                        row_num
                     )
 
                     # Yeni veriyi eğitim verisine ekle
@@ -191,14 +210,14 @@ class MainApp(QMainWindow):
         self.time_label = QLabel('Son Güncelleme: -')
         self.stats_label = QLabel('Tahminler: 0/0 (Doğru: 0)')
         self.prediction_count_label = QLabel('Kaçıncı Tahmin: 0')
-        self.row_num_label = QLabel('Tahmin Edilen Sıra: -')  # Yeni QLabel
+        self.row_num_label = QLabel('Tahmin Edilen Sıra: -')
 
         layout.addWidget(self.value_label)
         layout.addWidget(self.pred_label)
         layout.addWidget(self.time_label)
         layout.addWidget(self.stats_label)
         layout.addWidget(self.prediction_count_label)
-        layout.addWidget(self.row_num_label)  # Yeni QLabel'ı ekle
+        layout.addWidget(self.row_num_label)
 
         container = QWidget()
         container.setLayout(layout)
@@ -216,8 +235,8 @@ class MainApp(QMainWindow):
         self.time_label.setText(f"Son Güncelleme: {timestamp}")
         self.stats_label.setText(f"Tahminler: {total_predictions} (Doğru: {correct_predictions})")
         self.prediction_count_label.setText(f"Kaçıncı Tahmin: {prediction_count}")
-        self.row_num_label.setText(f"Tahmin Edilen Sıra: {row_num}")  # Sıra numarasını göster
-        QApplication.processEvents()  # Arayüzü güncelle
+        self.row_num_label.setText(f"Tahmin Edilen Sıra: {row_num}")
+        QApplication.processEvents()
 
     def show_error(self, message):
         self.time_label.setText(message)
