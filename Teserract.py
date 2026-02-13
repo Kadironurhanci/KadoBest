@@ -11,10 +11,10 @@ from sqlalchemy import create_engine
 from torch.utils.tensorboard import SummaryWriter
 
 # SQLAlchemy ile veritabanı bağlantısı
-SERVER = 'DESKTOP-EFBJ0MU'
-DATABASE = 'kadoDB'
-USERNAME = 'sa'
-PASSWORD = 'Kadir81onur'
+SERVER = ''
+DATABASE = ''
+USERNAME = ''
+PASSWORD = ''
 
 connection_string = f"mssql+pyodbc://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}?driver=ODBC+Driver+17+for+SQL+Server"
 engine = create_engine(connection_string)
