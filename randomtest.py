@@ -7,11 +7,11 @@ import os
 
 # MSSQL veritabanına bağlan
 conn = pyodbc.connect(
-    'DRIVER={ODBC Driver 17 for SQL Server};'
-    'SERVER=DESKTOP-EFBJ0MU;'  # Sunucu adını yaz
-    'DATABASE=kadoDB;'  # Veritabanı adını yaz
+    'DRIVER=;'
+    'SERVER=;'  # Sunucu adını yaz
+    'DATABASE=;'  # Veritabanı adını yaz
     'UID=sa;'  # Kullanıcı adını yaz
-    'PWD=Kadir81onur;'  # Şifreni yaz
+    'PWD='  # Şifreni yaz
 )
 
 # Veriyi çek
