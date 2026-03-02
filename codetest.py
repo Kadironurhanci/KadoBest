@@ -15,10 +15,10 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 # MSSQL veritabanına bağlan ve veriyi çek
 conn = pyodbc.connect(
     'DRIVER={ODBC Driver 17 for SQL Server};'
-    'SERVER=SunucuAdresi;'  # Sunucu adını buraya yaz
-    'DATABASE=VeritabaniAdi;'  # Veritabanı adını buraya yaz
-    'UID=KullaniciAdi;'  # Kullanıcı adını buraya yaz
-    'PWD=Sifre;'  # Şifreni buraya yaz
+    'SERVER=SunucuAdresi;'  
+    'DATABASE=VeritabaniAdi;' 
+    'UID=KullaniciAdi;'  
+    'PWD=Sifre;' 
 )
 cursor = conn.cursor()
 query = "SELECT Timestamp, random_sayi FROM prng_verisi"
