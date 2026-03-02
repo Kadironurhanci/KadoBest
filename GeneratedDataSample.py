@@ -10,11 +10,11 @@ from sklearn.preprocessing import MinMaxScaler
 
 # Veritabanı bağlantısı
 conn = pyodbc.connect(
-      'DRIVER={ODBC Driver 17 for SQL Server};'
-    'SERVER=DESKTOP-EFBJ0MU;'  # Sunucu adını yaz
-    'DATABASE=kadoDB;'  # Veritabanı adını yaz
-    'UID=sa;'  # Kullanıcı adını yaz
-    'PWD=Kadir81onur;') # Şifreni yaz)
+      'DRIVER='
+    'SERVER=;'  
+    'DATABASE=;' 
+    'UID=;'  
+    'PWD=') 
 cursor = conn.cursor()
 
 
